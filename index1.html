@@ -490,46 +490,55 @@
 
         try {
           const fileReader = new FileReader();
-          fileReader.onload = async function () {
-            const typedarray = new Uint8Array(this.result);
+          
+          // Use lexical fileReader instead of "this" which binds to undefined in Babel strict mode
+          fileReader.onload = async function (event) {
             if (!window.pdfjsLib) {
               showNotification("PDF 庫加載中，請稍後...", "warning");
               setIsPdfLoading(false);
               return;
             }
-            const pdf = await window.pdfjsLib.getDocument({ data: typedarray }).promise;
-            const numPages = pdf.numPages;
-            const pagesArray = [];
+            
+            try {
+              const typedarray = new Uint8Array(fileReader.result || event.target.result);
+              const pdf = await window.pdfjsLib.getDocument({ data: typedarray }).promise;
+              const numPages = pdf.numPages;
+              const pagesArray = [];
 
-            for (let i = 1; i <= numPages; i++) {
-              const page = await pdf.getPage(i);
-              const viewport = page.getViewport({ scale: 1.6 });
-              const canvas = document.createElement('canvas');
-              const context = canvas.getContext('2d');
-              canvas.height = viewport.height;
-              canvas.width = viewport.width;
+              for (let i = 1; i <= numPages; i++) {
+                const page = await pdf.getPage(i);
+                const viewport = page.getViewport({ scale: 1.6 });
+                const canvas = document.createElement('canvas');
+                const context = canvas.getContext('2d');
+                canvas.height = viewport.height;
+                canvas.width = viewport.width;
 
-              await page.render({ canvasContext: context, viewport: viewport }).promise;
-              const base64Img = canvas.toDataURL('image/jpeg', 0.85);
-              
-              pagesArray.push({
-                pageNum: i,
-                originalBackup: base64Img, 
-                originalBase64: base64Img, 
-                rawCleanedBase64: null,
-                cleanedBase64: null,
-                isProcessing: false,
-                isDone: false,
-                error: null
-              });
+                await page.render({ canvasContext: context, viewport: viewport }).promise;
+                const base64Img = canvas.toDataURL('image/jpeg', 0.85);
+                
+                pagesArray.push({
+                  pageNum: i,
+                  originalBackup: base64Img, 
+                  originalBase64: base64Img, 
+                  rawCleanedBase64: null,
+                  cleanedBase64: null,
+                  isProcessing: false,
+                  isDone: false,
+                  error: null
+                });
+              }
+              setPdfPages(pagesArray);
+              showNotification(`成功導入 PDF！總共 ${numPages} 頁。`, "success");
+            } catch (pdfErr) {
+              showNotification("PDF 頁面解析失敗: " + pdfErr.message, "error");
+            } finally {
+              setIsPdfLoading(false);
             }
-            setPdfPages(pagesArray);
-            showNotification(`成功導入 PDF！總共 ${numPages} 頁。`, "success");
           };
+          
           fileReader.readAsArrayBuffer(file);
         } catch (err) {
-          showNotification("PDF 解析錯誤: " + err.message, "error");
-        } finally {
+          showNotification("PDF 讀取錯誤: " + err.message, "error");
           setIsPdfLoading(false);
         }
       }
@@ -727,6 +736,7 @@
         }
       }
 
+      // Safe tab-opening for bypass
       function openImageInNewTab(base64Data) {
         if (!base64Data) return;
         try {
@@ -976,7 +986,7 @@
                                   </svg>
                                 </div>
                                 <div>
-                                  <button onClick={executePerspectiveWarp} className="px-5 py-2.5 bg-indigo-600 text-white text-xs font-bold rounded-lg shadow inline-flex items-center gap-1.5"><Maximize className="w-3.5 h-3.5" /> 裁切、拉直並自動還原</button>
+                                  <button onClick={executePerspectiveWarp} className="px-5 py-2.5 bg-indigo-600 text-white text-xs font-bold rounded-lg shadow inline-flex items-center gap-1.5"><Maximize className="w-4 h-4" /> 裁切、拉直並自動還原</button>
                                 </div>
                               </div>
                             ) : cleanedImage ? (
@@ -988,6 +998,17 @@
                                 <div>
                                   <span className="text-[10px] text-indigo-400 font-bold text-center block bg-indigo-500/10 py-1 rounded border border-indigo-500/20">乾淨圖</span>
                                   <img src={cleanedImage} className="max-h-64 mx-auto rounded mt-2 object-contain" />
+                                </div>
+                              </div>
+                            ) : eraserPreview ? (
+                              <div className="w-full text-center space-y-4">
+                                <span className="text-xs font-bold text-indigo-400 block">已載入原卷 (第 1 頁)</span>
+                                <div className="bg-slate-950 rounded-lg p-4 border border-slate-800 inline-block max-w-full shadow-2xl">
+                                  <img src={eraserPreview} className="max-h-80 mx-auto rounded object-contain" />
+                                </div>
+                                <div className="p-3 bg-indigo-950/20 border border-indigo-500/10 rounded-xl text-center max-w-md mx-auto">
+                                  <p className="text-xs text-slate-300 font-semibold">🎉 考卷相片加載成功！</p>
+                                  <p className="text-[10px] text-slate-400 mt-1">請點擊左側 <b>「一鍵消除筆跡」</b> 啟動還原，或使用 <b>「對齊拉直」</b> 調整角度！</p>
                                 </div>
                               </div>
                             ) : (
