@@ -438,6 +438,7 @@
         setActivePointIdx(idx);
       }
 
+      // Smoothly normalize coordinates inside relative container box
       function handleCropperPointerMove(e) {
         if (activePointIdx === null || !cropperContainerRef.current) return;
         e.preventDefault();
@@ -449,6 +450,7 @@
         setCropPoints(prev => prev.map((pt, i) => i === activePointIdx ? { x: relX, y: relY } : pt));
       }
 
+      // Handle pointer release of handles
       function handleCropperPointerUp(e) {
         e.preventDefault();
         if (activePointIdx !== null) {
@@ -471,6 +473,7 @@
         return { data, mimeType };
       }
 
+      // ⚙️ RESTORED FILE CONVERSION UTILITY (Essential for AI solving engine)
       function fileToGenerativePart(file) {
         return new Promise((resolve, reject) => {
           const reader = new FileReader();
@@ -492,6 +495,7 @@
       // EFFECTS FOR REAL-TIME RENDERING & PDF WORKER INIT
       // -------------------------------------------------------------
       useEffect(() => {
+        // Safe PDF Worker initialization (Anti-crash for static & dynamic load)
         if (window.pdfjsLib) {
           window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
         } else {
@@ -620,7 +624,8 @@
 
         try {
           const activeKey = userKey || apiKey;
-          const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image-preview:generateContent?key=${activeKey}`;
+          const modelName = "gemini-2.5-flash-image-preview";
+          const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${activeKey}`;
           const promptText = getErasePromptText();
           const targetSource = customImageSource || pdfPages[idx].originalBase64;
           const { data: base64Data, mimeType } = getBase64DataAndMime(targetSource);
@@ -660,7 +665,8 @@
         setIsBatchProcessing(true);
 
         const activeKey = userKey || apiKey;
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image-preview:generateContent?key=${activeKey}`;
+        const modelName = "gemini-2.5-flash-image-preview";
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${activeKey}`;
         const promptText = getErasePromptText();
 
         showNotification("已開始全自動排隊處理。", "info");
@@ -798,7 +804,10 @@
         try {
           const imagePart = await fileToGenerativePart(selectedImage);
           const activeKey = userKey || apiKey;
-          const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${activeKey}`;
+          
+          // ✨ DYNAMICALLY SWITCH MODEL IF USER USES PRIVATE API KEY OUTSIDE PREVIEW SANDBOX
+          const modelName = userKey ? "gemini-2.5-flash" : "gemini-2.5-flash-preview-09-2025";
+          const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${activeKey}`;
           
           // Enhanced professional cognitive pedagogy prompt for kids
           const promptText = `你是一個精通教育心理學、極度有愛心、幽默且接地氣的「神級家庭教師」。
@@ -813,7 +822,7 @@
    先用最生動、生活化的比喻，解釋這道題背後的核心學術概念是什麼。千萬不要直接丟公式，先讓孩子腦海中有畫面！
 
 3. 🚀【神級解題小秘笈（核心思維技巧）】：
-   傳授一個實用的「解題思維」或「記憶小口訣」（例如：畫圖法、分組法、消去法等），教導孩子如何「思考」這類問題，培養他們的解題直覺和學習技能。
+   傳授一個實用的「解題思維」或「記憶小口訣」（例如：畫圖法、分組法、消去法等），教導孩子如何「思考」這類問題，培養他們的解題直覺 and 學習技能。
 
 4. 📝【Step-by-Step 慢動作拆解】：
    清清楚楚、一步一步列出詳細的計算或分析步驟。每一個步驟旁邊，都要用括號寫明「點解要咁做」，確保孩子不是盲目抄寫，而是真正理解邏輯。對於數學公式，請使用整潔的LaTeX排版。
@@ -858,7 +867,10 @@
 
         try {
           const activeKey = userKey || apiKey;
-          const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${activeKey}`;
+          
+          // ✨ DYNAMICALLY SWITCH MODEL IF USER USES PRIVATE API KEY OUTSIDE PREVIEW SANDBOX
+          const modelName = userKey ? "gemini-2.5-flash" : "gemini-2.5-flash-preview-09-2025";
+          const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${activeKey}`;
           
           const payload = {
             contents: [{
@@ -972,7 +984,7 @@ ${scanResult}
             <main className="flex-1 overflow-y-auto p-4 md:p-6 max-w-6xl mx-auto w-full pb-20">
               {activeTab === 'eraser' && (
                 <div className="space-y-6 animate-fadeIn">
-                  {/* SIMPLIFIED WORKSPACE HEADER (Removed image/pdf source switchers entirely - Solves Request 1) */}
+                  {/* SIMPLIFIED WORKSPACE HEADER */}
                   <div className="bg-slate-900/50 border border-slate-800 p-5 rounded-2xl flex flex-col md:flex-row md:items-center justify-between gap-4">
                     <div>
                       <h2 className="text-xl font-bold flex items-center gap-2"><RefreshCw className="w-5 h-5 text-indigo-400 animate-spin-slow" /> 試卷手寫還原神器</h2>
@@ -1262,7 +1274,7 @@ ${scanResult}
                           ) : (
                             <div className="text-center text-slate-600 py-20">
                               <HelpCircle className="w-12 h-12 mx-auto mb-2 text-slate-800" />
-                              <p className="text-xs font-bold">上載功課題目照，AI 老友導師會喺呢度同你詳細分析！</p>
+                              <p className="text-xs font-bold">上載功課題目照，AI 老友導師會喺呢度同你詳細 analysis！</p>
                             </div>
                           )}
                         </div>
