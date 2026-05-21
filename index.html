@@ -378,6 +378,39 @@
         }
       }
 
+      // -------------------------------------------------------------------------
+      // 📐 INTERACTIVE CORNERS DRAGGING CONTROLLER (POINTER CAPTURE - ANTI-JUMP)
+      // -------------------------------------------------------------------------
+      function handleCropperPointerDown(e, idx) {
+        e.preventDefault();
+        e.target.setPointerCapture(e.pointerId);
+        setActivePointIdx(idx);
+      }
+
+      function handleCropperPointerMove(e) {
+        if (activePointIdx === null || !cropperContainerRef.current) return;
+        e.preventDefault();
+        const rect = cropperContainerRef.current.getBoundingClientRect();
+        let relX = (e.clientX - rect.left) / rect.width;
+        let relY = (e.clientY - rect.top) / rect.height;
+        relX = Math.max(0, Math.min(1, relX));
+        relY = Math.max(0, Math.min(1, relY));
+        setCropPoints(prev => prev.map((pt, i) => i === activePointIdx ? { x: relX, y: relY } : pt));
+      }
+
+      // Handle pointer release of handles
+      function handleCropperPointerUp(e) {
+        e.preventDefault();
+        if (activePointIdx !== null) {
+          try {
+            e.target.releasePointerCapture(e.pointerId);
+          } catch (err) {
+            console.warn("Release pointer capture failed", err);
+          }
+          setActivePointIdx(null);
+        }
+      }
+
       function getBase64DataAndMime(dataUrl) {
         if (!dataUrl) return { data: "", mimeType: "image/png" };
         const parts = dataUrl.split(',');
