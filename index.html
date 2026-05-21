@@ -92,7 +92,6 @@
       // -------------------------------------------------------------
       const synthRef = useRef(null);
       const cropperContainerRef = useRef(null);
-      const chatEndRef = useRef(null);
 
       // React States Initialization
       const [activeTab, setActiveTab] = useState('eraser');
@@ -106,22 +105,13 @@
         streak: 11
       });
 
-      const [eraserSourceMode, setEraserSourceMode] = useState('image'); 
+      // Filter & Mode Configs (PDF Erasing)
       const [isMonochromeBoost, setIsMonochromeBoost] = useState(true);
       const [bwThreshold, setBwThreshold] = useState(165); 
       const [bwContrast, setBwContrast] = useState(35);   
+      const [eraserMode, setEraserMode] = useState('full_clean'); // 'full_clean' or 'red_only'
 
-      // SINGLE IMAGE STATE
-      const [eraserImage, setEraserImage] = useState(null);
-      const [eraserPreview, setEraserPreview] = useState(null);       
-      const [originalEraserPreview, setOriginalEraserPreview] = useState(null); 
-      const [rawCleanedImage, setRawCleanedImage] = useState(null); 
-      const [cleanedImage, setCleanedImage] = useState(null);       
-      const [isErasing, setIsErasing] = useState(false);
-      const [eraserError, setEraserError] = useState(null);
-      const [eraserMode, setEraserMode] = useState('full_clean');   
-
-      // PERSPECTIVE CROP POINTS STATE
+      // PERSPECTIVE CROP POINTS STATE (Applies directly to active PDF page)
       const [isCropping, setIsCropping] = useState(false);
       const [cropPoints, setCropPoints] = useState([
         { x: 0.15, y: 0.15 }, 
@@ -133,7 +123,7 @@
 
       // MULTI-PAGE PDF STATE
       const [pdfFile, setPdfFile] = useState(null);
-      const [pdfPages, setPdfPages] = useState([]); 
+      const [pdfPages, setPdfPages] = useState([]); // Array of { pageNum, originalBackup, originalBase64, rawCleanedBase64, cleanedBase64, isProcessing, isDone, error }
       const [isPdfLoading, setIsPdfLoading] = useState(false);
       const [isBatchProcessing, setIsBatchProcessing] = useState(false);
       const [selectedPdfPageIdx, setSelectedPdfPageIdx] = useState(0);
@@ -151,12 +141,10 @@
       const [isScanning, setIsScanning] = useState(false);
       const [scanSubject, setScanSubject] = useState('General');
 
-      // Chat State
-      const [chatMessages, setChatMessages] = useState([
-        { id: '1', role: 'model', text: '喂 Bro！今日有咩功課搞唔明？或者需要幫你還原邊份試卷？儘管掉上黎！', timestamp: new Date() }
-      ]);
-      const [chatInput, setChatInput] = useState('');
-      const [isChatTyping, setIsChatTyping] = useState(false);
+      // --- 🧠 SIMILAR PRACTICE GENERATOR STATES ---
+      const [practiceQuestions, setPracticeQuestions] = useState(null);
+      const [isGeneratingPractice, setIsGeneratingPractice] = useState(false);
+      const [userAnswers, setUserAnswers] = useState({}); // { [questionIndex]: selectedOptionIndex }
 
       const [historyItems, setHistoryItems] = useState(() => {
         const saved = localStorage.getItem('hw_history');
@@ -361,12 +349,7 @@
 
       // Restored Missing resetToRawImage helper function to fix click crash
       function resetToRawImage() {
-        if (eraserSourceMode === 'image' && originalEraserPreview) {
-          setEraserPreview(originalEraserPreview);
-          setCleanedImage(null);
-          setRawCleanedImage(null);
-          showNotification("已還原最初原始單圖！", "info");
-        } else if (eraserSourceMode === 'pdf' && pdfPages[selectedPdfPageIdx]?.originalBackup) {
+        if (pdfPages[selectedPdfPageIdx]?.originalBackup) {
           setPdfPages(prev => prev.map((page, idx) => idx === selectedPdfPageIdx ? {
             ...page,
             originalBase64: page.originalBackup,
@@ -378,9 +361,77 @@
         }
       }
 
-      // -------------------------------------------------------------------------
+      // 🤖 AUTOMATIC QUAD-CORNER DETECTOR ENGINE
+      function runAutoCornerDetection() {
+        const targetBase64 = pdfPages[selectedPdfPageIdx]?.originalBackup;
+        if (!targetBase64) {
+          showNotification("你仲未上傳任何試卷檔，無法進行智能對齊！", "warning");
+          return;
+        }
+
+        showNotification("🤖 AI 正在掃描並定位試卷邊框...", "info");
+
+        const img = new Image();
+        img.crossOrigin = "anonymous";
+        img.onload = () => {
+          try {
+            const canvas = document.createElement('canvas');
+            const scale = 0.5;
+            const W = img.width * scale;
+            const H = img.height * scale;
+            canvas.width = W;
+            canvas.height = H;
+            
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, W, H);
+            const imgData = ctx.getImageData(0, 0, W, H);
+            const data = imgData.data;
+
+            const getPixelGray = (x, y) => {
+              const idx = (Math.floor(y) * Math.floor(W) + Math.floor(x)) * 4;
+              return 0.299 * data[idx] + 0.587 * data[idx+1] + 0.114 * data[idx+2];
+            };
+
+            const cx = W / 2;
+            const cy = H / 2;
+
+            const scanDiagonal = (startX, startY) => {
+              const steps = 120;
+              for (let i = 0; i < steps; i++) {
+                const t = i / steps;
+                const px = startX + (cx - startX) * t;
+                const py = startY + (cy - startY) * t;
+                
+                const gray = getPixelGray(px, py);
+                if (gray > 135) {
+                  return { x: px / W, y: py / H };
+                }
+              }
+              return { x: startX / W, y: startY / H }; 
+            };
+
+            const TL = scanDiagonal(W * 0.04, H * 0.04);
+            const TR = scanDiagonal(W * 0.96, H * 0.04);
+            const BR = scanDiagonal(W * 0.96, H * 0.96);
+            const BL = scanDiagonal(W * 0.04, H * 0.96);
+
+            setCropPoints([TL, TR, BR, BL]);
+            showNotification("🤖 智能邊框感應成功！錨點已自動貼合試卷四角。", "success");
+          } catch (err) {
+            console.error("Auto detect corners failed", err);
+            showNotification("智能對齊算法遇到干擾，已套用最佳預設值。", "warning");
+            setCropPoints([
+              { x: 0.1, y: 0.1 },
+              { x: 0.9, y: 0.1 },
+              { x: 0.9, y: 0.9 },
+              { x: 0.1, y: 0.9 }
+            ]);
+          }
+        };
+        img.src = targetBase64;
+      }
+
       // 📐 INTERACTIVE CORNERS DRAGGING CONTROLLER (POINTER CAPTURE - ANTI-JUMP)
-      // -------------------------------------------------------------------------
       function handleCropperPointerDown(e, idx) {
         e.preventDefault();
         e.target.setPointerCapture(e.pointerId);
@@ -398,7 +449,6 @@
         setCropPoints(prev => prev.map((pt, i) => i === activePointIdx ? { x: relX, y: relY } : pt));
       }
 
-      // Handle pointer release of handles
       function handleCropperPointerUp(e) {
         e.preventDefault();
         if (activePointIdx !== null) {
@@ -421,7 +471,6 @@
         return { data, mimeType };
       }
 
-      // ⚙️ RESTORED FILE CONVERSION UTILITY (Essential for AI solving engine)
       function fileToGenerativePart(file) {
         return new Promise((resolve, reject) => {
           const reader = new FileReader();
@@ -443,7 +492,6 @@
       // EFFECTS FOR REAL-TIME RENDERING & PDF WORKER INIT
       // -------------------------------------------------------------
       useEffect(() => {
-        // Safe PDF Worker initialization (Anti-crash for static & dynamic load)
         if (window.pdfjsLib) {
           window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
         } else {
@@ -563,52 +611,6 @@
         } catch (err) {
           showNotification("PDF 讀取錯誤: " + err.message, "error");
           setIsPdfLoading(false);
-        }
-      }
-
-      async function handleEraseHandwriting() {
-        await handleEraseHandwritingWithImage(eraserPreview);
-      }
-
-      async function handleEraseHandwritingWithImage(imageSourceUri) {
-        if (!imageSourceUri) {
-          showNotification("未上傳任何有筆跡的試卷！", "warning");
-          return;
-        }
-
-        setIsErasing(true);
-        setCleanedImage(null);
-        setRawCleanedImage(null);
-        setEraserError(null);
-
-        try {
-          const activeKey = userKey || apiKey;
-          const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image-preview:generateContent?key=${activeKey}`;
-          const { data: base64Data, mimeType } = getBase64DataAndMime(imageSourceUri);
-
-          const imagePart = { inlineData: { data: base64Data, mimeType: mimeType } };
-          const erasePrompt = getErasePromptText();
-
-          const payload = {
-            contents: [{ role: "user", parts: [{ text: erasePrompt }, imagePart] }],
-            generationConfig: { responseModalities: ["TEXT", "IMAGE"] }
-          };
-
-          const resultData = await callGeminiWithRetry(url, payload);
-          const base64Output = resultData.candidates?.[0]?.content?.parts?.find(p => p.inlineData)?.inlineData?.data;
-          
-          if (base64Output) {
-            const rawResultStr = `data:image/png;base64,${base64Output}`;
-            setRawCleanedImage(rawResultStr); 
-            showNotification("消筆跡完成！使用拉條微調白度質感！", "success");
-          } else {
-            throw new Error("API 返回了吉數據，請重試！");
-          }
-        } catch (error) {
-          setEraserError(error.message);
-          showNotification(`發生問題: ${error.message}`, "error");
-        } finally {
-          setIsErasing(false);
         }
       }
 
@@ -780,25 +782,8 @@
         }
       }
 
-      function handleSingleImageChange(e) {
-        const file = e.target.files[0];
-        if (file) {
-          setEraserImage(file);
-          const reader = new FileReader();
-          reader.onloadend = () => {
-            setEraserPreview(reader.result);
-            setOriginalEraserPreview(reader.result); 
-            setRawCleanedImage(null);
-            setCleanedImage(null);
-            setEraserError(null);
-            setIsCropping(false);
-          };
-          reader.readAsDataURL(file);
-        }
-      }
-
       // -------------------------------------------------------------
-      // SOLVER & CHAT ACTIONS
+      // SOLVER ACTIONS WITH ENHANCED HEURISTIC EDUCATION PROMPT
       // -------------------------------------------------------------
       async function handleScanSolve() {
         if (!selectedImage) {
@@ -807,12 +792,39 @@
         }
         setIsScanning(true);
         setScanResult(null);
+        setPracticeQuestions(null); // Reset practice questions when solving a new problem
+        setUserAnswers({});
 
         try {
           const imagePart = await fileToGenerativePart(selectedImage);
           const activeKey = userKey || apiKey;
           const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${activeKey}`;
-          const promptText = `你是一個極度專業且幽默的頂級家庭教師。請一步步解答這道功課，列出計算步驟：\n\n${scanPrompt}`;
+          
+          // Enhanced professional cognitive pedagogy prompt for kids
+          const promptText = `你是一個精通教育心理學、極度有愛心、幽默且接地氣的「神級家庭教師」。
+現在家長/學生提交了一張功課題目照片。請你為孩子提供一個兼具「深度解說」、「思維技巧」與「信心啟發」的完美解答。
+
+請嚴格遵循以下黃金解題架構進行回覆（使用繁體中文，語氣親切、多用鼓勵性詞彙，使用廣東話口吻讓孩子覺得好玩不悶）：
+
+1. 🌟【信心加油站】：
+   先用一句超級正面、充滿活力和幽默的話鼓勵孩子（例如：「呢條題望落好似好複雜，但其實只要拆開佢就易如反掌！等我同你一齊KO佢！」）。
+
+2. 💡【概念大白話（不急著給答案）】：
+   先用最生動、生活化的比喻，解釋這道題背後的核心學術概念是什麼。千萬不要直接丟公式，先讓孩子腦海中有畫面！
+
+3. 🚀【神級解題小秘笈（核心思維技巧）】：
+   傳授一個實用的「解題思維」或「記憶小口訣」（例如：畫圖法、分組法、消去法等），教導孩子如何「思考」這類問題，培養他們的解題直覺和學習技能。
+
+4. 📝【Step-by-Step 慢動作拆解】：
+   清清楚楚、一步一步列出詳細的計算或分析步驟。每一個步驟旁邊，都要用括號寫明「點解要咁做」，確保孩子不是盲目抄寫，而是真正理解邏輯。對於數學公式，請使用整潔的LaTeX排版。
+
+5. ⚠️【避坑防錯指南（常見陷阱）】：
+   指出這種類型的題目最容易在哪裡犯錯（例如：忘記變號、單位換算錯誤、漏看條件等），提醒孩子做完要怎樣自我檢查。
+
+6. 🎉【Bro 滿分小結與期許】：
+   最後給予孩子高度肯定，並給他們一個溫慢、充滿力量的信心結尾！
+
+用戶上傳圖片伴隨的要求是：${scanPrompt}`;
 
           const payload = {
             contents: [{ role: "user", parts: [{ text: promptText }, imagePart] }]
@@ -821,7 +833,7 @@
           const resultData = await callGeminiWithRetry(url, payload);
           const textResponse = resultData.candidates?.[0]?.content?.parts?.[0]?.text || "AI無返回。";
           setScanResult(textResponse);
-          showNotification("AI 已經解答！", "success");
+          showNotification("AI 已經為你完美拆解題目！", "success");
         } catch (error) {
           setScanResult(`Error: ${error.message}`);
           showNotification(`解題出錯: ${error.message}`, "error");
@@ -830,45 +842,99 @@
         }
       }
 
-      async function handleSendMessage() {
-        if (!chatInput.trim()) return;
-        const userMsg = { id: 'u' + Date.now(), role: 'user', text: chatInput, timestamp: new Date() };
-        setChatMessages(prev => [...prev, userMsg]);
-        const currentInput = chatInput;
-        setChatInput('');
-        setIsChatTyping(true);
+      // -------------------------------------------------------------
+      // 🧠 NEW: COGNITIVE PEDAGOGY PRACTICE GENERATOR (STRUCTURED JSON)
+      // Generates 3 highly matching practice MC questions based on solution
+      // -------------------------------------------------------------
+      async function generatePractice() {
+        if (!scanResult) {
+          showNotification("請先上傳功課圖片並等待 AI 解答完畢，才可以生成練習題喔！", "warning");
+          return;
+        }
+
+        setIsGeneratingPractice(true);
+        setPracticeQuestions(null);
+        setUserAnswers({});
 
         try {
-          const recentHistory = chatMessages.slice(-6).map(m => ({
-            role: m.role,
-            parts: [{ text: m.text }]
-          }));
-          recentHistory.push({
-            role: 'user',
-            parts: [{ text: `你是一位極度幽默的AI功課導師。用廣東話回答：${currentInput}` }]
-          });
-
           const activeKey = userKey || apiKey;
           const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${activeKey}`;
-
+          
           const payload = {
-            contents: recentHistory,
-            systemInstruction: { parts: [{ text: "你是幽默接地氣的廣東話AI導師。" }] }
+            contents: [{
+              role: "user",
+              parts: [{
+                text: `你是一個精通所有中小學學術領域、說話極具感染力的 AI 私人導師。
+現在，學生剛剛做完了一道題目，你已經為他提供了以下詳細解說：
+---
+${scanResult}
+---
+
+請你根據上述原題目的題型、核心邏輯和難度，為學生特別設計 3 道極度相似、難度對等的「四選一選擇題（Multiple Choice）」，讓孩子進行鞏固和練習，真正學會如何舉一反三。
+
+【重要要求】：
+1. 題目和選項要生動活潑，貼近日常生活，不呆板。
+2. 解釋（explanation）必須使用幽默、親切、大哥哥一般的廣東話口吻編寫，清晰說明為什麼這個選項正確，以及另外三個錯在哪裡。
+3. answerIndex 的索引必須是 0-based（0代表 A，1代表 B，2代表 C，3代表 D）。`
+              }]
+            }],
+            generationConfig: {
+              responseMimeType: "application/json",
+              responseSchema: {
+                type: "OBJECT",
+                properties: {
+                  questions: {
+                    type: "ARRAY",
+                    description: "3 highly similar practice questions",
+                    items: {
+                      type: "OBJECT",
+                      properties: {
+                        question: { type: "STRING", description: "題目內容（可以用繁體中文和口語廣東話）" },
+                        options: {
+                          type: "ARRAY",
+                          description: "Exactly 4 options representing A, B, C, D",
+                          items: { type: "STRING" }
+                        },
+                        answerIndex: { type: "INTEGER", description: "0-based index of correct option (0, 1, 2, or 3)" },
+                        explanation: { type: "STRING", description: "親切廣東話口吻詳細原理解說與防錯指南" }
+                      },
+                      required: ["question", "options", "answerIndex", "explanation"]
+                    }
+                  }
+                },
+                required: ["questions"]
+              }
+            }
           };
 
           const resultData = await callGeminiWithRetry(url, payload);
-          const botResponse = resultData.candidates?.[0]?.content?.parts?.[0]?.text || "聽唔明，講多次？";
-          setChatMessages(prev => [...prev, { id: 'm' + Date.now(), role: 'model', text: botResponse, timestamp: new Date() }]);
-        } catch (error) {
-          setChatMessages(prev => [...prev, { id: 'err' + Date.now(), role: 'model', text: `故障: ${error.message}`, timestamp: new Date() }]);
+          const jsonText = resultData.candidates?.[0]?.content?.parts?.[0]?.text;
+          
+          if (jsonText) {
+            const parsed = JSON.parse(jsonText);
+            if (parsed && parsed.questions) {
+              setPracticeQuestions(parsed.questions);
+              showNotification("🧠 3 題專屬智能類同練習題已出好！快讓細路挑戰一下！", "success");
+            } else {
+              throw new Error("返回的資料格式不符。");
+            }
+          } else {
+            throw new Error("無法解析生成內容。");
+          }
+        } catch (err) {
+          console.error("Generate practice error", err);
+          showNotification(`生成練習失敗: ${err.message}`, "error");
         } finally {
-          setIsChatTyping(false);
+          setIsGeneratingPractice(false);
         }
       }
 
-      function triggerQuickTemplate(subject, queryText) {
-        setActiveTab('chat');
-        setChatInput(queryText);
+      // Handle child selecting option
+      function handleSelectOption(qIdx, optIdx) {
+        setUserAnswers(prev => ({
+          ...prev,
+          [qIdx]: optIdx
+        }));
       }
 
       function saveKey(key) {
@@ -889,16 +955,14 @@
                 </div>
                 <div>
                   <h1 className="text-lg font-bold bg-gradient-to-r from-white via-indigo-200 to-indigo-400 bg-clip-text text-transparent">Homework Helper</h1>
-                  <p className="text-xs text-slate-400">試卷還原 & 消筆跡</p>
+                  <p className="text-xs text-slate-400">試卷還原 & 智能消筆跡</p>
                 </div>
               </div>
             </div>
 
             <nav className="hidden md:flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800">
               <button onClick={() => setActiveTab('eraser')} className={`px-4 py-1.5 rounded-lg text-xs font-semibold ${activeTab === 'eraser' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'}`}>✨ 試卷消筆跡</button>
-              <button onClick={() => setActiveTab('dashboard')} className={`px-4 py-1.5 rounded-lg text-xs font-semibold ${activeTab === 'dashboard' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'}`}>儀表板</button>
-              <button onClick={() => setActiveTab('scan')} className={`px-4 py-1.5 rounded-lg text-xs font-semibold ${activeTab === 'scan' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'}`}>AI 解題</button>
-              <button onClick={() => setActiveTab('chat')} className={`px-4 py-1.5 rounded-lg text-xs font-semibold ${activeTab === 'chat' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'}`}>AI 導師</button>
+              <button onClick={() => setActiveTab('scan')} className={`px-4 py-1.5 rounded-lg text-xs font-semibold ${activeTab === 'scan' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'}`}>🧠 AI 智能解題</button>
               <button onClick={() => setActiveTab('settings')} className={`px-4 py-1.5 rounded-lg text-xs font-semibold ${activeTab === 'settings' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'}`}>設置</button>
             </nav>
             <div className="text-xs font-bold text-amber-300">連續守護 {userProfile.streak} 日</div>
@@ -907,17 +971,14 @@
           <div className="flex-1 flex relative">
             <main className="flex-1 overflow-y-auto p-4 md:p-6 max-w-6xl mx-auto w-full pb-20">
               {activeTab === 'eraser' && (
-                <div className="space-y-6">
+                <div className="space-y-6 animate-fadeIn">
+                  {/* SIMPLIFIED WORKSPACE HEADER (Removed image/pdf source switchers entirely - Solves Request 1) */}
                   <div className="bg-slate-900/50 border border-slate-800 p-5 rounded-2xl flex flex-col md:flex-row md:items-center justify-between gap-4">
                     <div>
                       <h2 className="text-xl font-bold flex items-center gap-2"><RefreshCw className="w-5 h-5 text-indigo-400 animate-spin-slow" /> 試卷手寫還原神器</h2>
-                      <p className="text-xs text-slate-400">一鍵智能抹除藍黑原子筆、鉛筆及改分紅印！</p>
+                      <p className="text-xs text-slate-400">一鍵導入 PDF 試卷、進行 3D 拉直與像素級智能消筆跡！</p>
                     </div>
-                    <div className="flex gap-2">
-                      <div className="flex bg-slate-950 p-1 rounded-xl border border-slate-800">
-                        <button onClick={() => setEraserSourceMode('image')} className={`px-3 py-1.5 rounded-lg text-xs font-bold ${eraserSourceMode === 'image' ? 'bg-indigo-600 text-white' : 'text-slate-400'}`}>智能單圖</button>
-                        <button onClick={() => setEraserSourceMode('pdf')} className={`px-3 py-1.5 rounded-lg text-xs font-bold ${eraserSourceMode === 'pdf' ? 'bg-indigo-600 text-white' : 'text-slate-400'}`}>多頁 PDF 檔</button>
-                      </div>
+                    <div className="flex gap-2 shrink-0">
                       <div className="flex bg-slate-950 p-1 rounded-xl border border-slate-800">
                         <button onClick={() => setEraserMode('full_clean')} className={`px-3 py-1.5 rounded-lg text-xs font-bold ${eraserMode === 'full_clean' ? 'bg-purple-600 text-white' : 'text-slate-400'}`}>🧹 完美還原</button>
                         <button onClick={() => setEraserMode('red_only')} className={`px-3 py-1.5 rounded-lg text-xs font-bold ${eraserMode === 'red_only' ? 'bg-purple-600 text-white' : 'text-slate-400'}`}>❌ 只清紅印</button>
@@ -945,289 +1006,274 @@
                     )}
                   </div>
 
-                  {/* SINGLE IMAGE LAYOUT */}
-                  {eraserSourceMode === 'image' && (
-                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-                      <div className="lg:col-span-5 space-y-4">
-                        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-4 shadow">
-                          <h3 className="font-bold text-sm text-slate-300 flex items-center gap-2"><Upload className="w-4 h-4 text-indigo-400" /> 上傳考卷照片</h3>
-                          <div className="border-2 border-dashed border-slate-800 rounded-xl p-5 bg-slate-950 flex flex-col items-center justify-center relative min-h-[220px]">
-                            <input type="file" accept="image/*" onChange={handleSingleImageChange} className="absolute inset-0 opacity-0 cursor-pointer" />
-                            {eraserPreview ? (
-                              <div className="relative w-full">
-                                <img src={eraserPreview} className="max-h-52 mx-auto rounded-lg object-contain" />
-                                {isErasing && (
-                                  <div className="absolute inset-0 bg-slate-950/70 flex items-center justify-center rounded-lg">
-                                    <div className="w-full h-1 bg-gradient-to-r from-transparent via-indigo-400 to-transparent absolute left-0 animate-scan"></div>
-                                    <span className="text-xs font-bold text-indigo-300 flex items-center gap-1.5 bg-slate-900 px-3 py-1.5 rounded-full border border-indigo-500/20"><Loader2 className="w-4 h-4 animate-spin" /> 正在還原中...</span>
-                                  </div>
-                                )}
-                              </div>
-                            ) : (
-                              <div className="text-center text-slate-500">
-                                <Camera className="w-10 h-10 mx-auto mb-2 text-slate-700" />
-                                <p className="text-xs font-bold">點擊或拖放上傳</p>
-                              </div>
-                            )}
-                          </div>
-                          {eraserPreview && !isErasing && (
-                            <div className="grid grid-cols-2 gap-2">
-                              <button onClick={() => setIsCropping(!isCropping)} className={`py-2 rounded-xl font-bold text-xs flex items-center justify-center gap-1 border ${isCropping ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-950 border-slate-800 text-slate-300'}`}><Crop className="w-3.5 h-3.5" /> {isCropping ? '關閉拉直器' : '📐 對齊拉直'}</button>
-                              <button onClick={resetToRawImage} className="py-2 rounded-xl font-bold text-xs bg-slate-950 border border-slate-800 text-slate-400 hover:text-rose-400"><RotateCcw className="w-3.5 h-3.5" /> 還原原圖</button>
+                  {/* DIRECT MULTI-PAGE PDF LAYOUT */}
+                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                    <div className="lg:col-span-4 space-y-4">
+                      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-4 shadow">
+                        <h3 className="font-bold text-sm text-slate-300 flex items-center gap-2"><FileText className="w-4 h-4 text-indigo-400" /> 上傳 PDF 試卷檔</h3>
+                        <div className="border-2 border-dashed border-slate-800 rounded-xl p-5 bg-slate-950 flex flex-col items-center justify-center relative min-h-[140px]">
+                          <input type="file" accept="application/pdf" onChange={handlePdfUpload} className="absolute inset-0 opacity-0 cursor-pointer" />
+                          {pdfFile ? (
+                            <div className="text-center space-y-1">
+                              <FileText className="w-10 h-10 text-emerald-400 mx-auto animate-bounce" />
+                              <p className="text-xs font-bold text-slate-200 truncate max-w-[160px]">{pdfFile.name}</p>
+                              <p className="text-[10px] text-slate-500">{(pdfFile.size/1024/1024).toFixed(2)} MB • {pdfPages.length} 頁</p>
                             </div>
-                          )}
-                          <button onClick={handleEraseHandwriting} disabled={isErasing || !eraserPreview || isCropping} className="w-full py-3.5 bg-gradient-to-r from-pink-600 to-indigo-600 hover:from-pink-500 hover:to-indigo-500 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-2 shadow">{isErasing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />} 一鍵消除筆跡</button>
-                        </div>
-                      </div>
-
-                      {/* WORKSPACE PREVIEW */}
-                      <div className="lg:col-span-7">
-                        <div className="bg-slate-900 border border-slate-800 rounded-2xl h-full min-h-[460px] flex flex-col overflow-hidden">
-                          <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between bg-slate-950/40">
-                            <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">{isCropping ? '📐 拖動 4 角貼合邊緣' : '✨ 空白考卷預覽'}</span>
-                            {isCropping && (
-                              <button onClick={runAutoCornerDetection} className="px-2.5 py-1 bg-gradient-to-r from-emerald-600 to-indigo-600 text-white text-[10px] font-bold rounded-lg flex items-center gap-1"><Sparkles className="w-3.5 h-3.5" /> 🤖 智能自動感應</button>
-                            )}
-                            {cleanedImage && !isCropping && (
-                              <div className="flex gap-2">
-                                <button onClick={() => openImageInNewTab(cleanedImage)} className="p-1.5 px-3 bg-slate-850 rounded border border-slate-700 text-xs font-bold flex items-center gap-1"><ExternalLink className="w-3.5 h-3.5" /> 新分頁打開</button>
-                                <button onClick={() => downloadSingleCleanedImage(cleanedImage, 'Cleaned')} className="p-1.5 px-3 bg-indigo-600 text-white rounded text-xs font-bold flex items-center gap-1 shadow"><Download className="w-3.5 h-3.5" /> 下載</button>
-                              </div>
-                            )}
-                          </div>
-
-                          <div className="flex-1 p-5 flex flex-col justify-center items-center">
-                            {isCropping && eraserPreview ? (
-                              <div className="space-y-4 text-center w-full">
-                                <div ref={cropperContainerRef} onPointerMove={handleCropperPointerMove} onPointerUp={handleCropperPointerUp} onPointerCancel={handleCropperPointerUp} className="relative inline-block select-none max-w-full overflow-hidden rounded-lg border border-indigo-500 shadow-2xl touch-none">
-                                  <img src={originalEraserPreview || eraserPreview} className="max-h-[300px] w-auto object-contain pointer-events-none block" />
-                                  <svg className="absolute inset-0 w-full h-full">
-                                    <polygon points={`${cropPoints[0].x*100}%,${cropPoints[0].y*100}% ${cropPoints[1].x*100}%,${cropPoints[1].y*100}% ${cropPoints[2].x*100}%,${cropPoints[2].y*100}% ${cropPoints[3].x*100}%,${cropPoints[3].y*100}%`} fill="rgba(99, 102, 241, 0.2)" stroke="#6366f1" strokeWidth="2" strokeDasharray="4 2" />
-                                    {cropPoints.map((pt, i) => (
-                                      <circle key={i} cx={`${pt.x*100}%`} cy={`${pt.y*100}%`} r="12" fill="#ffffff" stroke="#6366f1" strokeWidth="3" className="hover:scale-125 transition-transform" onPointerDown={(e) => handleCropperPointerDown(e, i)} onPointerUp={handleCropperPointerUp} onPointerCancel={handleCropperPointerUp} />
-                                    ))}
-                                  </svg>
-                                </div>
-                                <div>
-                                  <button onClick={executePerspectiveWarp} className="px-5 py-2.5 bg-indigo-600 text-white text-xs font-bold rounded-lg shadow inline-flex items-center gap-1.5"><Maximize className="w-4 h-4" /> 裁切、拉直並自動還原</button>
-                                </div>
-                              </div>
-                            ) : cleanedImage ? (
-                              <div className="grid grid-cols-2 gap-4 w-full">
-                                <div>
-                                  <span className="text-[10px] text-slate-500 font-bold text-center block bg-slate-900 py-1 rounded">原圖</span>
-                                  <img src={originalEraserPreview || eraserPreview} className="max-h-64 mx-auto rounded mt-2 object-contain" />
-                                </div>
-                                <div>
-                                  <span className="text-[10px] text-indigo-400 font-bold text-center block bg-indigo-500/10 py-1 rounded border border-indigo-500/20">乾淨圖</span>
-                                  <img src={cleanedImage} className="max-h-64 mx-auto rounded mt-2 object-contain" />
-                                </div>
-                              </div>
-                            ) : eraserPreview ? (
-                              <div className="w-full text-center space-y-4">
-                                <span className="text-xs font-bold text-indigo-400 block">已載入原卷 (第 1 頁)</span>
-                                <div className="bg-slate-950 rounded-lg p-4 border border-slate-800 inline-block max-w-full shadow-2xl">
-                                  <img src={eraserPreview} className="max-h-80 mx-auto rounded object-contain" />
-                                </div>
-                                <div className="p-3 bg-indigo-950/20 border border-indigo-500/10 rounded-xl text-center max-w-md mx-auto">
-                                  <p className="text-xs text-slate-300 font-semibold">🎉 考卷相片加載成功！</p>
-                                  <p className="text-[10px] text-slate-400 mt-1">請點擊左側 <b>「一鍵消除筆跡」</b> 啟動還原，或使用 <b>「對齊拉直」</b> 調整角度！</p>
-                                </div>
-                              </div>
-                            ) : (
-                              <div className="text-center text-slate-600 py-10"><HelpCircle className="w-12 h-12 mx-auto mb-2 text-slate-800" />等候上傳試卷...</div>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* MULTI-PAGE PDF LAYOUT */}
-                  {eraserSourceMode === 'pdf' && (
-                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-                      <div className="lg:col-span-4 space-y-4">
-                        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-4 shadow">
-                          <h3 className="font-bold text-sm text-slate-300 flex items-center gap-2"><FileText className="w-4 h-4 text-indigo-400" /> 上傳 PDF 試卷檔</h3>
-                          <div className="border-2 border-dashed border-slate-800 rounded-xl p-5 bg-slate-950 flex flex-col items-center justify-center relative min-h-[140px]">
-                            <input type="file" accept="application/pdf" onChange={handlePdfUpload} className="absolute inset-0 opacity-0 cursor-pointer" />
-                            {pdfFile ? (
-                              <div className="text-center space-y-1">
-                                <FileText className="w-10 h-10 text-emerald-400 mx-auto" />
-                                <p className="text-xs font-bold text-slate-200 truncate max-w-[160px]">{pdfFile.name}</p>
-                              </div>
-                            ) : (
-                              <div className="text-center text-slate-500"><Upload className="w-8 h-8 mx-auto mb-2" /><p className="text-xs">選擇 PDF 檔</p></div>
-                            )}
-                          </div>
-                          {pdfPages.length > 0 && (
-                            <button onClick={handleBatchPdfErase} disabled={isBatchProcessing || isCropping} className="w-full py-3 bg-gradient-to-r from-pink-600 to-indigo-600 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-2 shadow">{isBatchProcessing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />} 一鍵批量處理全部 PDF</button>
+                          ) : (
+                            <div className="text-center text-slate-500"><Upload className="w-8 h-8 mx-auto mb-2" /><p className="text-xs">選擇 PDF 檔</p><p className="text-[10px] text-slate-500 mt-1">支持多頁或單頁 PDF 試卷</p></div>
                           )}
                         </div>
-                      </div>
-
-                      <div className="lg:col-span-8">
-                        {pdfPages.length > 0 ? (
-                          <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
-                            <div className="md:col-span-4 bg-slate-900 border border-slate-800 rounded-2xl p-3 h-[500px] flex flex-col">
-                              <h4 className="text-xs font-bold text-slate-400 mb-2">📄 PDF 頁面清單 ({pdfPages.length} 頁)</h4>
-                              <div className="flex-1 overflow-y-auto space-y-1.5 pr-1">
-                                {pdfPages.map((page, idx) => (
-                                  <div key={idx} onClick={() => { setSelectedPdfPageIdx(idx); setIsCropping(false); }} className={`p-2 rounded-xl border cursor-pointer flex justify-between items-center ${selectedPdfPageIdx === idx ? 'bg-indigo-600/20 border-indigo-500' : 'bg-slate-950 border-slate-800 hover:bg-slate-900'}`}>
-                                    <span className="text-xs font-semibold">第 {page.pageNum} 頁</span>
-                                    {page.isProcessing && <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-400" />}
-                                    {page.isDone && <Check className="w-3.5 h-3.5 text-emerald-400" />}
-                                  </div>
-                                ))}
-                              </div>
-                              {pdfPages.some(p => p.cleanedBase64) && (
-                                <button onClick={downloadAllCleanedPages} className="w-full mt-3 py-2.5 bg-gradient-to-r from-emerald-600 to-indigo-600 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-2"><FileDown className="w-4 h-4" /> 📥 下載所有已還原頁</button>
-                              )}
-                            </div>
-
-                            <div ref={cropperContainerRef} onPointerMove={handleCropperPointerMove} onPointerUp={handleCropperPointerUp} onPointerCancel={handleCropperPointerUp} className="md:col-span-8 bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden flex flex-col h-[500px] touch-none">
-                              <div className="px-4 py-2.5 border-b border-slate-800 bg-slate-950/40 flex justify-between items-center">
-                                <span className="text-xs font-bold text-indigo-400">預覽 Page {pdfPages[selectedPdfPageIdx]?.pageNum}</span>
-                                <div className="flex gap-1">
-                                  <button onClick={() => { setIsCropping(!isCropping); showNotification(isCropping ? "已關閉拉直器" : "📐 四角拉直器已開啟", "info"); }} className={`p-1 px-2 rounded text-[10px] font-bold border flex items-center gap-1 ${isCropping ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-850 border-slate-700 text-slate-200'}`}><Crop className="w-3.5 h-3.5" /> 拉直此頁</button>
-                                  {isCropping && <button onClick={runAutoCornerDetection} className="px-2 py-0.5 bg-gradient-to-r from-emerald-600 to-indigo-600 text-white text-[9px] font-bold rounded"><Sparkles className="w-3.5 h-3.5" /> 🤖 智能自動感應</button>}
-                                  {!isCropping && <button onClick={() => handleSinglePageErase(selectedPdfPageIdx)} className="p-1 px-2 rounded text-[10px] font-bold bg-gradient-to-r from-pink-600 to-purple-600 text-white shadow"><Sparkles className="w-3.5 h-3.5" /> 消除此頁筆跡</button>}
-                                  <button onClick={resetToRawImage} className="p-1 px-2 rounded bg-slate-800 text-[10px] font-bold text-slate-400 border border-slate-700">重設此頁</button>
-                                </div>
-                              </div>
-
-                              <div className="flex-1 p-4 flex flex-col justify-center overflow-y-auto">
-                                {isCropping ? (
-                                  <div className="w-full text-center space-y-4">
-                                    <div className="relative inline-block select-none max-w-full overflow-hidden rounded-lg border border-indigo-500 shadow-2xl">
-                                      <img src={pdfPages[selectedPdfPageIdx]?.originalBackup} className="max-h-[220px] w-auto object-contain pointer-events-none block" />
-                                      <svg className="absolute inset-0 w-full h-full">
-                                        <polygon points={`${cropPoints[0].x*100}%,${cropPoints[0].y*100}% ${cropPoints[1].x*100}%,${cropPoints[1].y*100}% ${cropPoints[2].x*100}%,${cropPoints[2].y*100}% ${cropPoints[3].x*100}%,${cropPoints[3].y*100}%`} fill="rgba(99, 102, 241, 0.2)" stroke="#6366f1" strokeWidth="2.5" strokeDasharray="4 2" />
-                                        {cropPoints.map((pt, idx) => (
-                                          <circle key={idx} cx={`${pt.x * 100}%`} cy={`${pt.y * 100}%`} r="11" fill="#ffffff" stroke="#6366f1" strokeWidth="3" className="hover:scale-125 transition-transform" onPointerDown={(e) => handleCropperPointerDown(e, idx)} onPointerUp={handleCropperPointerUp} onPointerCancel={handleCropperPointerUp} />
-                                        ))}
-                                      </svg>
-                                    </div>
-                                    <div>
-                                      <button onClick={executePerspectiveWarp} className="px-4 py-2 bg-indigo-600 text-white text-xs font-bold rounded-lg shadow inline-flex items-center gap-1.5"><Maximize className="w-3.5 h-3.5" /> 裁切、拉直並自動還原</button>
-                                    </div>
-                                  </div>
-                                ) : (
-                                  <div className="grid grid-cols-2 gap-3 h-full">
-                                    <div className="flex flex-col h-full">
-                                      <span className="text-[10px] font-bold text-center text-slate-400 bg-slate-950 py-1 rounded">原卷 (第 {pdfPages[selectedPdfPageIdx]?.pageNum} 頁)</span>
-                                      <div className="flex-1 bg-slate-950 rounded-lg p-2 border border-slate-800 mt-1 flex items-center justify-center overflow-hidden">
-                                        <img src={pdfPages[selectedPdfPageIdx]?.originalBase64} className="max-h-60 rounded object-contain" />
-                                      </div>
-                                    </div>
-                                    <div className="flex flex-col h-full">
-                                      <span className="text-[10px] font-bold text-center text-indigo-400 bg-indigo-500/10 border border-indigo-500/15 py-1 rounded">乾淨卷</span>
-                                      <div className="flex-1 bg-slate-950 rounded-lg p-2 border border-slate-800 mt-1 flex items-center justify-center overflow-hidden relative">
-                                        {pdfPages[selectedPdfPageIdx]?.cleanedBase64 ? (
-                                          <img src={pdfPages[selectedPdfPageIdx]?.cleanedBase64} className="max-h-60 rounded object-contain" />
-                                        ) : pdfPages[selectedPdfPageIdx]?.isProcessing ? (
-                                          <div className="text-center space-y-2"><Loader2 className="w-8 h-8 text-pink-500 animate-spin mx-auto" /><p className="text-[10px] text-slate-400">還原中...</p></div>
-                                        ) : (
-                                          <span className="text-[10px] text-slate-500">等候還原</span>
-                                        )}
-                                      </div>
-                                    </div>
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="bg-slate-900 border border-slate-800 rounded-2xl h-full min-h-[440px] flex flex-col justify-center items-center text-slate-600"><FileText className="w-16 h-16 text-slate-800 mb-2 animate-pulse" /><p className="text-sm font-bold">請在左邊導入 PDF...</p></div>
+                        {pdfPages.length > 0 && (
+                          <button onClick={handleBatchPdfErase} disabled={isBatchProcessing || isCropping} className="w-full py-3 bg-gradient-to-r from-pink-600 via-purple-600 to-indigo-600 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-2 shadow">{isBatchProcessing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />} 一鍵批量處理全部 PDF</button>
                         )}
                       </div>
                     </div>
-                  )}
-                </div>
-              )}
 
-              {activeTab === 'dashboard' && (
-                <div className="space-y-6">
-                  <div className="relative overflow-hidden rounded-3xl bg-gradient-to-r from-indigo-900 via-indigo-950 to-slate-900 border border-indigo-500/20 p-6 md:p-8 shadow-2xl">
-                    <div className="absolute top-0 right-0 w-64 h-64 bg-indigo-500/10 rounded-full blur-3xl"></div>
-                    <div className="relative z-10 max-w-xl space-y-3">
-                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-indigo-500/20 text-indigo-300 text-xs font-semibold"><Sparkles className="w-3.5 h-3.5" /> 2026 最新 AI 還原技術</span>
-                      <h2 className="text-2xl md:text-3xl font-extrabold text-white">喂 {userProfile.name}，今日想操邊份試卷？</h2>
-                      <p className="text-slate-300 text-sm leading-relaxed">支持單張截圖 或 **整套多頁 PDF** 一鍵對齊拉直、消除手寫筆跡！</p>
-                      <button onClick={() => { setActiveTab('eraser'); setEraserSourceMode('pdf'); }} className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-pink-600 to-indigo-600 text-white font-bold text-sm hover:brightness-110 active:scale-95 transition-all"><RefreshCw className="w-4 h-4 animate-spin-slow" /> 導入 PDF 批量消筆跡</button>
+                    <div className="lg:col-span-8">
+                      {pdfPages.length > 0 ? (
+                        <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
+                          <div className="md:col-span-4 bg-slate-900 border border-slate-800 rounded-2xl p-3 h-[500px] flex flex-col">
+                            <h4 className="text-xs font-bold text-slate-400 mb-2">📄 PDF 頁面清單 ({pdfPages.length} 頁)</h4>
+                            <div className="flex-1 overflow-y-auto space-y-1.5 pr-1">
+                              {pdfPages.map((page, idx) => (
+                                <div key={idx} onClick={() => { setSelectedPdfPageIdx(idx); setIsCropping(false); }} className={`p-2 rounded-xl border cursor-pointer flex justify-between items-center ${selectedPdfPageIdx === idx ? 'bg-indigo-600/20 border-indigo-500' : 'bg-slate-950 border-slate-800 hover:bg-slate-900'}`}>
+                                  <span className="text-xs font-semibold">第 {page.pageNum} 頁</span>
+                                  {page.isProcessing && <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-400" />}
+                                  {page.isDone && <Check className="w-3.5 h-3.5 text-emerald-400" />}
+                                </div>
+                              ))}
+                            </div>
+                            {pdfPages.some(p => p.cleanedBase64) && (
+                              <button onClick={downloadAllCleanedPages} className="w-full mt-3 py-2.5 bg-gradient-to-r from-emerald-600 to-indigo-600 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-2"><FileDown className="w-4 h-4 animate-bounce" /> 📥 下載所有已還原頁</button>
+                            )}
+                          </div>
+
+                          <div ref={cropperContainerRef} onPointerMove={handleCropperPointerMove} onPointerUp={handleCropperPointerUp} onPointerCancel={handleCropperPointerUp} className="md:col-span-8 bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden flex flex-col h-[500px] touch-none">
+                            <div className="px-4 py-2.5 border-b border-slate-800 bg-slate-950/40 flex justify-between items-center">
+                              <span className="text-xs font-bold text-indigo-400">預覽 Page {pdfPages[selectedPdfPageIdx]?.pageNum}</span>
+                              <div className="flex gap-1 shrink-0">
+                                <button onClick={() => { setIsCropping(!isCropping); showNotification(isCropping ? "已關閉拉直器" : "📐 四角拉直器已開啟", "info"); }} className={`p-1 px-2 rounded text-[10px] font-bold border flex items-center gap-1 ${isCropping ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-850 border-slate-700 text-slate-200'}`}><Crop className="w-3.5 h-3.5" /> 拉直此頁</button>
+                                {isCropping && <button onClick={runAutoCornerDetection} className="px-2 py-0.5 bg-gradient-to-r from-emerald-600 to-indigo-600 text-white text-[9px] font-bold rounded"><Sparkles className="w-3.5 h-3.5 animate-pulse" /> 🤖 智能自動感應</button>}
+                                {!isCropping && <button onClick={() => handleSinglePageErase(selectedPdfPageIdx)} className="p-1 px-2 rounded text-[10px] font-bold bg-gradient-to-r from-pink-600 to-purple-600 text-white shadow"><Sparkles className="w-3.5 h-3.5 animate-pulse" /> 消除此頁筆跡</button>}
+                                <button onClick={resetToRawImage} className="p-1 px-2 rounded bg-slate-800 text-[10px] font-bold text-slate-400 border border-slate-700">重設此頁</button>
+                              </div>
+                            </div>
+
+                            <div className="flex-1 p-4 flex flex-col justify-center overflow-y-auto">
+                              {isCropping ? (
+                                <div className="w-full text-center space-y-4">
+                                  <div className="relative inline-block select-none max-w-full overflow-hidden rounded-lg border border-indigo-500 shadow-2xl">
+                                    <img src={pdfPages[selectedPdfPageIdx]?.originalBackup} className="max-h-[220px] w-auto object-contain pointer-events-none block" />
+                                    <svg className="absolute inset-0 w-full h-full">
+                                      <polygon points={`${cropPoints[0].x*100}%,${cropPoints[0].y*100}% ${cropPoints[1].x*100}%,${cropPoints[1].y*100}% ${cropPoints[2].x*100}%,${cropPoints[2].y*100}% ${cropPoints[3].x*100}%,${cropPoints[3].y*100}%`} fill="rgba(99, 102, 241, 0.2)" stroke="#6366f1" strokeWidth="2.5" strokeDasharray="4 2" />
+                                      {cropPoints.map((pt, idx) => (
+                                        <circle key={idx} cx={`${pt.x * 100}%`} cy={`${pt.y * 100}%`} r="11" fill="#ffffff" stroke="#6366f1" strokeWidth="3" className="hover:scale-125 transition-transform" onPointerDown={(e) => handleCropperPointerDown(e, idx)} onPointerUp={handleCropperPointerUp} onPointerCancel={handleCropperPointerUp} />
+                                      ))}
+                                    </svg>
+                                  </div>
+                                  <div>
+                                    <button onClick={executePerspectiveWarp} className="px-4 py-2 bg-indigo-600 text-white text-xs font-bold rounded-lg shadow inline-flex items-center gap-1.5"><Maximize className="w-3.5 h-3.5" /> 裁切、拉直並自動還原</button>
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="grid grid-cols-2 gap-3 h-full">
+                                  <div className="flex flex-col h-full">
+                                    <span className="text-[10px] font-bold text-center text-slate-400 bg-slate-950 py-1 rounded">原卷 (第 {pdfPages[selectedPdfPageIdx]?.pageNum} 頁)</span>
+                                    <div className="flex-1 bg-slate-950 rounded-lg p-2 border border-slate-800 mt-1 flex items-center justify-center overflow-hidden">
+                                      <img src={pdfPages[selectedPdfPageIdx]?.originalBase64} className="max-h-60 rounded object-contain" />
+                                    </div>
+                                  </div>
+                                  <div className="flex flex-col h-full">
+                                    <span className="text-[10px] font-bold text-center text-indigo-400 bg-indigo-500/10 border border-indigo-500/15 py-1 rounded">乾淨卷</span>
+                                    <div className="flex-1 bg-slate-950 rounded-lg p-2 border border-slate-800 mt-1 flex items-center justify-center overflow-hidden relative">
+                                      {pdfPages[selectedPdfPageIdx]?.cleanedBase64 ? (
+                                        <img src={pdfPages[selectedPdfPageIdx]?.cleanedBase64} className="max-h-60 rounded object-contain" />
+                                      ) : pdfPages[selectedPdfPageIdx]?.isProcessing ? (
+                                        <div className="text-center space-y-2"><Loader2 className="w-8 h-8 text-pink-500 animate-spin mx-auto" /><p className="text-[10px] text-slate-400">還原中...</p></div>
+                                      ) : (
+                                        <div className="text-center text-slate-500 py-10">
+                                          <HelpCircle className="w-8 h-8 mx-auto mb-1.5" />
+                                          <p className="text-[10px]">尚未還原此頁</p>
+                                          <p className="text-[9px] text-slate-600 mt-1">點擊上方「消除此頁筆跡」或左方批量還原！</p>
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="bg-slate-900 border border-slate-800 rounded-2xl h-full min-h-[440px] flex flex-col justify-center items-center text-slate-600"><FileText className="w-16 h-16 text-slate-800 mb-2 animate-pulse" /><p className="text-sm font-bold">請在左邊導入 PDF 試卷...</p></div>
+                      )}
                     </div>
                   </div>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div className="bg-slate-900/50 border border-slate-800 rounded-2xl p-5 space-y-2"><div className="w-10 h-10 rounded-lg bg-indigo-500/10 flex items-center justify-center"><Crop className="w-5 h-5 text-indigo-400" /></div><h4 className="font-bold text-white">3D 四角拉直</h4><p className="text-xs text-slate-400">手機歪斜拍照一鍵對齊，秒變完美 A4 標準印本比例。</p></div>
-                    <div className="bg-slate-900/50 border border-slate-800 rounded-2xl p-5 space-y-2"><div className="w-10 h-10 rounded-lg bg-pink-500/10 flex items-center justify-center"><RefreshCw className="w-5 h-5 text-pink-400" /></div><h4 className="font-bold text-white">工業級黑白增強</h4><p className="text-xs text-slate-400">自動抹除筆跡，高對比度純黑白渲染，列印超級慳墨。</p></div>
-                    <div className="bg-slate-900/50 border border-slate-800 rounded-2xl p-5 space-y-2"><div className="w-10 h-10 rounded-lg bg-emerald-500/10 flex items-center justify-center"><CheckCircle className="w-5 h-5 text-emerald-400" /></div><h4 className="font-bold text-white">純前端安全隱私</h4><p className="text-xs text-slate-400">所有數據本地傳輸處理，完全保障孩子學習私隱。</p></div>
-                  </div>
                 </div>
               )}
 
+              {/* VIEW: SMART SCANNER & SIMILAR QUIZ GENERATOR (Solves actual user query!) */}
               {activeTab === 'scan' && (
-                <div className="space-y-6">
+                <div className="space-y-6 animate-fadeIn">
                   <div className="flex items-center justify-between">
                     <div>
-                      <h2 className="text-xl font-bold flex items-center gap-2"><Camera className="w-5 h-5 text-indigo-400" /> 智能拍照解題</h2>
-                      <p className="text-xs text-slate-400">直接上傳題目照，AI 化身最強老友導師幫你一步步拆解！</p>
+                      <h2 className="text-xl font-bold flex items-center gap-2"><Camera className="w-5 h-5 text-indigo-400" /> 🧠 AI 智能啟發式解題</h2>
+                      <p className="text-xs text-slate-400">直接上傳題目照，AI 化身最強「啟發型私人導師」引導細路學習思維！</p>
                     </div>
                   </div>
+
                   <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                    {/* Left Panel: Camera/File Dropper */}
                     <div className="lg:col-span-5 space-y-4">
-                      <div className="border-2 border-dashed border-slate-800 rounded-2xl p-6 bg-slate-900/30 flex flex-col items-center justify-center text-center cursor-pointer relative min-h-[220px]">
-                        <input type="file" accept="image/*" onChange={(e) => { const file = e.target.files[0]; if (file) { setSelectedImage(file); const reader = new FileReader(); reader.onloadend = () => setImagePreview(reader.result); reader.readAsDataURL(file); } }} className="absolute inset-0 opacity-0 cursor-pointer" />
-                        {imagePreview ? <img src={imagePreview} className="max-h-40 mx-auto rounded-lg object-contain shadow-md" /> : <div className="space-y-2"><Upload className="w-10 h-10 text-slate-700 mx-auto" /><p className="text-xs">點擊或拖放上載題目圖片</p></div>}
+                      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+                        <div className="border-2 border-dashed border-slate-800 rounded-2xl p-6 bg-slate-950 flex flex-col items-center justify-center text-center cursor-pointer relative min-h-[220px] hover:border-indigo-500/50 transition-all">
+                          <input type="file" accept="image/*" onChange={(e) => { const file = e.target.files[0]; if (file) { setSelectedImage(file); const reader = new FileReader(); reader.onloadend = () => setImagePreview(reader.result); reader.readAsDataURL(file); } }} className="absolute inset-0 opacity-0 cursor-pointer" />
+                          {imagePreview ? <img src={imagePreview} className="max-h-40 mx-auto rounded-lg object-contain shadow-md" /> : <div className="space-y-2"><Upload className="w-10 h-10 text-slate-700 mx-auto" /><p className="text-xs font-bold text-slate-300">點擊或拖放上載題目相片</p></div>}
+                        </div>
+                        <div className="space-y-2">
+                          <label className="text-xs font-bold text-slate-400">解題補充說明 / 備註：</label>
+                          <textarea value={scanPrompt} onChange={(e) => setScanPrompt(e.target.value)} className="w-full h-24 text-xs bg-slate-950 border border-slate-800 rounded-xl p-3 focus:outline-none focus:border-indigo-500/50 text-slate-100 placeholder-slate-600 resize-none leading-relaxed" />
+                        </div>
+                        <button onClick={handleScanSolve} disabled={isScanning || !selectedImage} className="w-full py-3.5 bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-2 shadow hover:brightness-110 active:scale-95 transition-all">{isScanning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-3.5 h-3.5 animate-pulse" />} AI 極速解題</button>
                       </div>
-                      <div className="space-y-2">
-                        <label className="text-xs font-bold text-slate-400">解題說明（選填）：</label>
-                        <textarea value={scanPrompt} onChange={(e) => setScanPrompt(e.target.value)} className="w-full h-24 text-xs bg-slate-900 border border-slate-800 rounded-xl p-3 focus:outline-none text-slate-100 placeholder-slate-600 resize-none leading-relaxed" />
-                      </div>
-                      <button onClick={handleScanSolve} disabled={isScanning || !selectedImage} className="w-full py-3.5 bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-2 shadow">{isScanning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />} AI 極速解題</button>
                     </div>
-                    <div className="lg:col-span-7">
-                      <div className="bg-slate-900 border border-slate-800 rounded-2xl h-full min-h-[400px] flex flex-col overflow-hidden">
-                        <div className="px-4 py-3 border-b border-slate-800 bg-slate-950/40"><span className="text-xs font-bold text-slate-400 uppercase tracking-wider">解答結果：</span></div>
-                        <div className="flex-1 p-5 overflow-y-auto space-y-4 text-sm leading-relaxed text-slate-200">
+
+                    {/* Right Panel: Solution Output & Smart Quiz Generator */}
+                    <div className="lg:col-span-7 space-y-6">
+                      <div className="bg-slate-900 border border-slate-800 rounded-2xl min-h-[400px] flex flex-col overflow-hidden shadow-2xl">
+                        <div className="px-4 py-3 border-b border-slate-800 bg-slate-950/40 flex justify-between items-center">
+                          <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">🌟 導師深度解剖分析</span>
+                        </div>
+                        
+                        <div className="flex-1 p-5 overflow-y-auto space-y-6 text-sm leading-relaxed text-slate-200">
                           {isScanning ? (
-                            <div className="h-full flex flex-col items-center justify-center text-center py-20"><Loader2 className="w-8 h-8 text-indigo-500 animate-spin mb-2" /><p className="text-xs text-slate-400">AI 正在瘋狂解題中...</p></div>
+                            <div className="h-full flex flex-col items-center justify-center text-center py-20">
+                              <Loader2 className="w-8 h-8 text-indigo-500 animate-spin mb-2" />
+                              <p className="text-xs font-bold text-slate-400">AI 正在深度思考解題、編寫「啟發思維步驟」中...</p>
+                            </div>
                           ) : scanResult ? (
-                            <div className="whitespace-pre-wrap select-text">{scanResult}</div>
+                            <div className="space-y-6 select-text">
+                              <div className="whitespace-pre-wrap leading-relaxed">{scanResult}</div>
+                              
+                              {/* 🧠 SMART CROPPER SIMILAR QUIZ GENERATION TRIGGER SECTION */}
+                              <div className="pt-6 border-t border-slate-800">
+                                {isGeneratingPractice ? (
+                                  <div className="bg-slate-950/60 p-6 rounded-2xl border border-indigo-500/20 text-center space-y-3">
+                                    <Loader2 className="w-7 h-7 text-indigo-400 animate-spin mx-auto" />
+                                    <p className="text-xs font-bold text-indigo-300">🤖 AI 正在根據上題核心邏輯，為細路智能編製 3 道相似題...</p>
+                                  </div>
+                                ) : practiceQuestions ? (
+                                  <div className="space-y-6 animate-fadeIn">
+                                    <div className="flex items-center justify-between">
+                                      <h3 className="text-sm font-extrabold text-indigo-300 flex items-center gap-1.5">
+                                        <Sparkles className="w-4 h-4 text-indigo-400 animate-pulse" />
+                                        🤖 專屬類同練習挑戰 (AI Practice Time!)
+                                      </h3>
+                                      <button onClick={generatePractice} className="text-[10px] text-slate-400 hover:text-white flex items-center gap-1">
+                                        <RotateCcw className="w-3 h-3" /> 出過新題
+                                      </button>
+                                    </div>
+
+                                    <div className="space-y-5">
+                                      {practiceQuestions.map((q, qIdx) => {
+                                        const answeredIdx = userAnswers[qIdx];
+                                        const isAnswered = answeredIdx !== undefined;
+                                        
+                                        return (
+                                          <div key={qIdx} className="p-4 bg-slate-950 border border-slate-800 rounded-2xl space-y-3">
+                                            <div className="flex gap-2">
+                                              <span className="text-xs font-mono font-bold bg-indigo-500/10 text-indigo-300 w-5 h-5 rounded-full flex items-center justify-center shrink-0 border border-indigo-500/20">{qIdx + 1}</span>
+                                              <p className="text-xs font-bold text-slate-200">{q.question}</p>
+                                            </div>
+
+                                            {/* Options Grid */}
+                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 pl-7 pt-1">
+                                              {q.options.map((opt, optIdx) => {
+                                                const letter = ['A', 'B', 'C', 'D'][optIdx];
+                                                const isSelected = answeredIdx === optIdx;
+                                                const isCorrectOpt = optIdx === q.answerIndex;
+                                                
+                                                let btnClass = "bg-slate-900 border-slate-800 hover:border-slate-700 text-slate-300";
+                                                if (isSelected) {
+                                                  if (isCorrectOpt) {
+                                                    btnClass = "bg-emerald-950/80 border-emerald-500 text-emerald-200 shadow-lg shadow-emerald-500/5";
+                                                  } else {
+                                                    btnClass = "bg-rose-950/80 border-rose-500 text-rose-200 shadow-lg shadow-rose-500/5";
+                                                  }
+                                                } else if (isAnswered && isCorrectOpt) {
+                                                  // Highlight the correct answer even if the kid guessed wrong! Very educational.
+                                                  btnClass = "bg-emerald-950/40 border-emerald-500/40 text-emerald-300";
+                                                }
+
+                                                return (
+                                                  <button 
+                                                    key={optIdx}
+                                                    onClick={() => !isAnswered && handleSelectOption(qIdx, optIdx)}
+                                                    disabled={isAnswered}
+                                                    className={`p-2.5 rounded-xl border text-left text-xs font-medium transition-all flex gap-1.5 ${btnClass}`}
+                                                  >
+                                                    <span className="font-bold text-indigo-400 shrink-0">{letter}.</span>
+                                                    <span>{opt}</span>
+                                                  </button>
+                                                );
+                                              })}
+                                            </div>
+
+                                            {/* Real-time Dynamic Cantonese Feedback Explanation once answered */}
+                                            {isAnswered && (
+                                              <div className="pl-7 pt-1.5 animate-fadeIn">
+                                                <div className={`p-3 rounded-xl border text-[11px] leading-relaxed ${
+                                                  answeredIdx === q.answerIndex 
+                                                    ? 'bg-emerald-950/10 border-emerald-500/20 text-slate-300' 
+                                                    : 'bg-rose-950/10 border-rose-500/20 text-slate-300'
+                                                }`}>
+                                                  <p className="font-bold flex items-center gap-1.5 mb-1">
+                                                    {answeredIdx === q.answerIndex ? (
+                                                      <span className="text-emerald-400">🎉 答對了！Bro 真係好醒目！</span>
+                                                    ) : (
+                                                      <span className="text-rose-400">⚠️ 答錯咗啵，唔緊要！睇睇大師點講：</span>
+                                                    )}
+                                                  </p>
+                                                  <div className="text-slate-400 select-text whitespace-pre-wrap">{q.explanation}</div>
+                                                </div>
+                                              </div>
+                                            )}
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div className="bg-slate-950/40 border border-slate-800 p-5 rounded-2xl text-center space-y-3">
+                                    <p className="text-xs text-slate-400 leading-relaxed">
+                                      💡 <b>思考訓練小幫手：</b> 想確認仔女係咪真係學識咗？一撳即生成 3 題類似題型選擇題畀佢操，秒速覆盤！
+                                    </p>
+                                    <button 
+                                      onClick={generatePractice}
+                                      className="px-5 py-2.5 bg-gradient-to-r from-emerald-600 via-teal-600 to-indigo-600 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-2 mx-auto shadow-lg shadow-emerald-500/10 active:scale-95 transition-all"
+                                    >
+                                      <Sparkles className="w-4 h-4 animate-pulse" />
+                                      📝 即刻生成類同練習題
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
                           ) : (
-                            <div className="text-center py-24 text-slate-600"><HelpCircle className="w-12 h-12 mx-auto mb-2 text-slate-800" /><p className="text-xs">上載題目照，解答將實時展示於此。</p></div>
+                            <div className="text-center text-slate-600 py-20">
+                              <HelpCircle className="w-12 h-12 mx-auto mb-2 text-slate-800" />
+                              <p className="text-xs font-bold">上載功課題目照，AI 老友導師會喺呢度同你詳細分析！</p>
+                            </div>
                           )}
                         </div>
                       </div>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {activeTab === 'chat' && (
-                <div className="space-y-4 max-w-4xl mx-auto">
-                  <div className="bg-slate-900 border border-slate-800 rounded-2xl h-[480px] flex flex-col overflow-hidden shadow-xl">
-                    <div className="flex-1 p-4 overflow-y-auto space-y-4 select-text">
-                      {chatMessages.map((msg) => (
-                        <div key={msg.id} className={`flex gap-3 max-w-[85%] ${msg.role === 'user' ? 'ml-auto flex-row-reverse' : ''}`}>
-                          <div className={`w-8 h-8 rounded-lg shrink-0 flex items-center justify-center text-xs font-bold ${msg.role === 'user' ? 'bg-indigo-600 text-white' : 'bg-slate-850 text-indigo-400 border border-slate-700'}`}>{msg.role === 'user' ? <User className="w-4 h-4" /> : <Brain className="w-4 h-4" />}</div>
-                          <div className="space-y-1">
-                            <div className={`p-3 rounded-2xl text-xs md:text-sm leading-relaxed whitespace-pre-wrap ${msg.role === 'user' ? 'bg-indigo-600 text-white rounded-tr-none' : 'bg-slate-950 text-slate-200 border border-slate-800 rounded-tl-none'}`}>{msg.text}</div>
-                          </div>
-                        </div>
-                      ))}
-                      {isChatTyping && <div className="flex gap-3"><Loader2 className="w-5 h-5 animate-spin text-indigo-400" /></div>}
-                      <div ref={chatEndRef} />
-                    </div>
-                    <div className="p-3 border-t border-slate-800 bg-slate-950/40 flex items-center gap-2">
-                      <input type="text" value={chatInput} onChange={(e) => setChatInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()} placeholder="輸入你想問導師嘅問題..." className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-xs md:text-sm text-slate-100 placeholder-slate-600 focus:outline-none transition-all" />
-                      <button onClick={handleSendMessage} disabled={isChatTyping || !chatInput.trim()} className="p-3 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl"><Send className="w-4 h-4" /></button>
                     </div>
                   </div>
                 </div>
               )}
 
               {activeTab === 'settings' && (
-                <div className="space-y-6 max-w-2xl mx-auto">
+                <div className="space-y-6 max-w-2xl mx-auto animate-fadeIn">
                   <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4 shadow-xl">
                     <div className="flex items-center gap-2 text-indigo-400 font-bold text-sm"><Sparkles className="w-4 h-4" /> Gemini API 金鑰 (選填)</div>
                     <p className="text-xs text-slate-400">數據將儲存於你瀏覽器的 LocalStorage 入面，保證安全！</p>
