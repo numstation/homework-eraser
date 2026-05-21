@@ -99,6 +99,10 @@
       const [uiNotification, setUiNotification] = useState(null);
 
       const [userKey, setUserKey] = useState(() => localStorage.getItem('hw_user_api_key') || '');
+      
+      // Dynamic API Endpoint Base URL State (To bypass Hong Kong / geographic blocks via proxy!)
+      const [apiEndpoint, setApiEndpoint] = useState(() => localStorage.getItem('hw_user_api_endpoint') || 'https://generativelanguage.googleapis.com');
+
       const [userProfile, setUserProfile] = useState({
         name: 'Bro',
         grade: 'Parent / Kids Practice',
@@ -624,8 +628,9 @@
 
         try {
           const activeKey = userKey || apiKey;
-          const modelName = "gemini-2.5-flash-image-preview";
-          const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${activeKey}`;
+          // Dynamic model naming - fallback to preview if using platform proxy
+          const modelName = userKey ? "gemini-2.5-flash" : "gemini-2.5-flash-image-preview";
+          const url = `${apiEndpoint}/v1beta/models/${modelName}:generateContent?key=${activeKey}`;
           const promptText = getErasePromptText();
           const targetSource = customImageSource || pdfPages[idx].originalBase64;
           const { data: base64Data, mimeType } = getBase64DataAndMime(targetSource);
@@ -665,8 +670,8 @@
         setIsBatchProcessing(true);
 
         const activeKey = userKey || apiKey;
-        const modelName = "gemini-2.5-flash-image-preview";
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${activeKey}`;
+        const modelName = userKey ? "gemini-2.5-flash" : "gemini-2.5-flash-image-preview";
+        const url = `${apiEndpoint}/v1beta/models/${modelName}:generateContent?key=${activeKey}`;
         const promptText = getErasePromptText();
 
         showNotification("已開始全自動排隊處理。", "info");
@@ -807,7 +812,7 @@
           
           // ✨ DYNAMICALLY SWITCH MODEL IF USER USES PRIVATE API KEY OUTSIDE PREVIEW SANDBOX
           const modelName = userKey ? "gemini-2.5-flash" : "gemini-2.5-flash-preview-09-2025";
-          const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${activeKey}`;
+          const url = `${apiEndpoint}/v1beta/models/${modelName}:generateContent?key=${activeKey}`;
           
           // Enhanced professional cognitive pedagogy prompt for kids
           const promptText = `你是一個精通教育心理學、極度有愛心、幽默且接地氣的「神級家庭教師」。
@@ -870,7 +875,7 @@
           
           // ✨ DYNAMICALLY SWITCH MODEL IF USER USES PRIVATE API KEY OUTSIDE PREVIEW SANDBOX
           const modelName = userKey ? "gemini-2.5-flash" : "gemini-2.5-flash-preview-09-2025";
-          const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${activeKey}`;
+          const url = `${apiEndpoint}/v1beta/models/${modelName}:generateContent?key=${activeKey}`;
           
           const payload = {
             contents: [{
@@ -947,6 +952,12 @@ ${scanResult}
           ...prev,
           [qIdx]: optIdx
         }));
+      }
+
+      // Custom endpoint saver
+      function saveEndpoint(endpoint) {
+        setApiEndpoint(endpoint);
+        localStorage.setItem('hw_user_api_endpoint', endpoint);
       }
 
       function saveKey(key) {
@@ -1124,7 +1135,7 @@ ${scanResult}
                 </div>
               )}
 
-              {/* VIEW: SMART SCANNER & SIMILAR QUIZ GENERATOR (Solves actual user query!) */}
+              {/* VIEW: SMART SCANNER & SIMILAR QUIZ GENERATOR */}
               {activeTab === 'scan' && (
                 <div className="space-y-6 animate-fadeIn">
                   <div className="flex items-center justify-between">
@@ -1290,6 +1301,30 @@ ${scanResult}
                     <div className="flex items-center gap-2 text-indigo-400 font-bold text-sm"><Sparkles className="w-4 h-4" /> Gemini API 金鑰 (選填)</div>
                     <p className="text-xs text-slate-400">數據將儲存於你瀏覽器的 LocalStorage 入面，保證安全！</p>
                     <input type="password" value={userKey} onChange={(e) => saveKey(e.target.value)} placeholder="AI_zaSy..." className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-xs md:text-sm text-slate-100 focus:outline-none focus:border-indigo-500 transition-all" />
+                    
+                    {/* 🌐 NEW: DYNAMIC PROXY ENDPOINT SETTINGS FIELD (Solves geographic region blocks in Hong Kong!) */}
+                    <div className="pt-3 border-t border-slate-800 space-y-2">
+                      <label className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
+                        <ExternalLink className="w-4 h-4 text-indigo-400" /> 
+                        Gemini API 代理伺服器節點 (CORS Proxy Endpoint):
+                      </label>
+                      <p className="text-[10px] text-slate-500 leading-relaxed">
+                        💡 <b>香港直連必讀：</b> 因為 Google 限制了香港等部分地區的 IP 直連，如果你唔想開 VPN，推薦在上方輸入一個免費中轉的反向代理（例如自建嘅 Cloudflare Worker 網址）。
+                      </p>
+                      <input 
+                        type="text" 
+                        value={apiEndpoint} 
+                        onChange={(e) => saveEndpoint(e.target.value)} 
+                        placeholder="https://generativelanguage.googleapis.com" 
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-xs text-slate-100 focus:outline-none focus:border-indigo-500 transition-all font-mono" 
+                      />
+                      <div className="flex justify-between items-center text-[10px] text-slate-500">
+                        <span>預設直連：https://generativelanguage.googleapis.com</span>
+                        {apiEndpoint !== 'https://generativelanguage.googleapis.com' && (
+                          <button onClick={() => saveEndpoint('https://generativelanguage.googleapis.com')} className="text-rose-400 hover:text-rose-300">重設為 Google 官方官方</button>
+                        )}
+                      </div>
+                    </div>
                   </div>
                 </div>
               )}
